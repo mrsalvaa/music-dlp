@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=music-dlp
+GenericName=Playlist downloader
+GenericName[es]=Descargador de playlists
+Comment=Download playlists from TXT lists and export your Spotify playlists
+Comment[es]=Descarga playlists desde listas TXT y exporta tus playlists de Spotify
+Exec=music-dlp %F
+Icon=music-dlp
+Terminal=false
+Categories=AudioVideo;Audio;Network;
+Keywords=music;playlist;download;yt-dlp;spotify;música;descargar;
+StartupWMClass=music-dlp
