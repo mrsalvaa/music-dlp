@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Corre los tests y construye el AppImage en Ubuntu 22.04 (glibc vieja = compatible con casi cualquier distro).
-# Con una etiqueta vX.Y.Z además publica el AppImage en una versión (release).
+# Con una etiqueta vX.Y.Z publica el AppImage y su SHA256SUMS en la versión (release) de esa etiqueta.
+# A mano (Run workflow) se le puede pasar una etiqueta existente para reconstruir y reemplazar sus archivos.
 name: build
 
 on:
@@ -9,17 +10,31 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Etiqueta existente cuya versión hay que reconstruir (p. ej. v0.1.0). Vacío = solo construir."
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.release }}
+  cancel-in-progress: true
+
 jobs:
   appimage:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
-      contents: write   # solo para publicar la versión cuando hay etiqueta
+      contents: write   # solo para publicar la versión
+    env:
+      RELEASE_TAG: ${{ inputs.release || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release || github.ref }}
 
       - name: Dependencias del sistema (Qt sin pantalla y herramientas)
         run: |
@@ -36,6 +51,12 @@ jobs:
           uv pip install -q --python .venv/bin/python "yt-dlp[default]" PySide6-Essentials keyring secretstorage pytest
           .venv/bin/python -m pytest -q
 
+      - name: La etiqueta coincide con la versión del código
+        if: env.RELEASE_TAG != ''
+        run: |
+          version=$(.venv/bin/python -c "import sys; sys.path.insert(0,'src'); import music_dlp; print(music_dlp.__version__)")
+          test "v$version" = "$RELEASE_TAG" || { echo "La etiqueta $RELEASE_TAG no coincide con la versión $version"; exit 1; }
+
       - name: appimagetool
         run: |
           mkdir -p build
@@ -49,10 +70,14 @@ jobs:
       - name: Probar que arranca
         run: |
           set +e
-          QT_QPA_PLATFORM=offscreen MUSIC_DLP_CONFIG="$RUNNER_TEMP/cfg" MUSIC_DLP_DATA="$RUNNER_TEMP/data" timeout 10 dist/music-dlp-*-x86_64.AppImage --appimage-extract-and-run
+          QT_QPA_PLATFORM=offscreen MUSIC_DLP_CONFIG="$RUNNER_TEMP/cfg" MUSIC_DLP_DATA="$RUNNER_TEMP/data" \
+            timeout 15 dist/music-dlp-*-x86_64.AppImage --appimage-extract-and-run
           code=$?
           echo "exit=$code"
           test "$code" -eq 124   # 124 = seguía abierta cuando la cortó timeout
+
+      - name: Verificar la suma
+        run: cd dist && sha256sum -c SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
@@ -62,7 +87,14 @@ jobs:
             dist/SHA256SUMS
 
       - name: Publicar versión
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/music-dlp-*-x86_64.AppImage dist/SHA256SUMS --title "music-dlp $GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # La versión ya existe (p. ej. se publicó con un AppImage local): reemplazar sus archivos
+            gh release upload "$RELEASE_TAG" dist/music-dlp-*-x86_64.AppImage dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/music-dlp-*-x86_64.AppImage dist/SHA256SUMS \
+              --title "music-dlp $RELEASE_TAG" --generate-notes
+          fi
